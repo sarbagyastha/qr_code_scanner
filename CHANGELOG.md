@@ -1,3 +1,6 @@
+## 0.5.3
+* Added `useHybridComposition` flag to enable Hybrid Composition for Android.
+
 ## 0.5.2
 #### Bugfixes
 * Increased delay to fix QRView opening zoomed in on some devices by adding small delay to updateDimensions(). (#250)
