@@ -86,7 +86,28 @@ class _QRViewState extends State<QRView> {
       child: SizeChangedLayoutNotifier(
         child: (widget.overlay != null)
             ? _getPlatformQrViewWithOverlay()
-            : _getPlatformQrView(),
+            : _PlatformQRView(
+                onQRViewCreated: widget.onQRViewCreated,
+                cameraFacing: widget.cameraFacing,
+                useHybridComposition: widget.useHybridComposition,
+                onChannelCreated: (channel) {
+                  print(channel);
+                  final key = widget.key as GlobalKey<State<StatefulWidget>>;
+                  // Start scan after creation of the view
+                  final controller = QRViewController._(
+                    _channel,
+                    key,
+                    widget.onPermissionSet,
+                    widget.cameraFacing,
+                  ).._startScan(
+                      key,
+                      widget.overlay,
+                      widget.formatsAllowed,
+                    );
+
+                  widget.onQRViewCreated(controller);
+                },
+              ),
       ),
     );
   }
@@ -208,6 +229,92 @@ class _QRViewState extends State<QRView> {
   }
 }
 
+class _PlatformQRView extends StatelessWidget {
+  const _PlatformQRView({
+    Key? key,
+    required this.onQRViewCreated,
+    required this.cameraFacing,
+    required this.useHybridComposition,
+    required this.onChannelCreated,
+  }) : super(key: key);
+
+  final QRViewCreatedCallback onQRViewCreated;
+  final CameraFacing cameraFacing;
+  final bool useHybridComposition;
+  final ValueChanged<MethodChannel> onChannelCreated;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget _platformQrView;
+    if (kIsWeb) {
+      _platformQrView = createWebQrView(
+        onPlatformViewCreated: onQRViewCreated,
+        cameraFacing: cameraFacing,
+      );
+    } else {
+      final viewType = 'net.touchcapture.qr.flutterqr/qrview';
+      final creationParams = _QrCameraSettings(
+        cameraFacing: cameraFacing,
+      ).toMap();
+
+      switch (defaultTargetPlatform) {
+        case TargetPlatform.android:
+          if (useHybridComposition) {
+            _platformQrView = PlatformViewLink(
+              viewType: viewType,
+              surfaceFactory: (context, controller) {
+                return AndroidViewSurface(
+                  controller: controller as AndroidViewController,
+                  gestureRecognizers: const <
+                      Factory<OneSequenceGestureRecognizer>>{},
+                  hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+                );
+              },
+              onCreatePlatformView: (params) {
+                return PlatformViewsService.initSurfaceAndroidView(
+                  id: params.id,
+                  viewType: viewType,
+                  layoutDirection: TextDirection.ltr,
+                  creationParams: creationParams,
+                  creationParamsCodec: const StandardMessageCodec(),
+                )
+                  ..addOnPlatformViewCreatedListener(
+                      params.onPlatformViewCreated)
+                  ..addOnPlatformViewCreatedListener(_onPlatformViewCreated)
+                  ..create();
+              },
+            );
+          } else {
+            _platformQrView = AndroidView(
+              viewType: viewType,
+              onPlatformViewCreated: _onPlatformViewCreated,
+              creationParams: creationParams,
+              creationParamsCodec: const StandardMessageCodec(),
+            );
+          }
+          break;
+        case TargetPlatform.iOS:
+          _platformQrView = UiKitView(
+            viewType: viewType,
+            onPlatformViewCreated: _onPlatformViewCreated,
+            creationParams: creationParams,
+            creationParamsCodec: const StandardMessageCodec(),
+          );
+          break;
+        default:
+          throw UnsupportedError(
+            "Trying to use the default qrview implementation for $defaultTargetPlatform but there isn't a default one",
+          );
+      }
+    }
+    return _platformQrView;
+  }
+
+  void _onPlatformViewCreated(int id) {
+    onChannelCreated(MethodChannel('net.touchcapture.qr.flutterqr/qrview_$id'));
+  }
+}
+
 class _QrCameraSettings {
   _QrCameraSettings({
     this.cameraFacing = CameraFacing.unknown,
@@ -223,9 +330,12 @@ class _QrCameraSettings {
 }
 
 class QRViewController {
-  QRViewController._(MethodChannel channel, GlobalKey? qrKey,
-      PermissionSetCallback? onPermissionSet, CameraFacing cameraFacing)
-      : _channel = channel,
+  QRViewController._(
+    MethodChannel channel,
+    GlobalKey? qrKey,
+    PermissionSetCallback? onPermissionSet,
+    CameraFacing cameraFacing,
+  )   : _channel = channel,
         _cameraFacing = cameraFacing {
     _channel.setMethodCallHandler((call) async {
       switch (call.method) {
@@ -268,8 +378,11 @@ class QRViewController {
   bool get hasPermissions => _hasPermissions;
 
   /// Starts the barcode scanner
-  Future<void> _startScan(GlobalKey key, QrScannerOverlayShape? overlay,
-      List<BarcodeFormat>? barcodeFormats) async {
+  Future<void> _startScan(
+    GlobalKey key,
+    QrScannerOverlayShape? overlay,
+    List<BarcodeFormat>? barcodeFormats,
+  ) async {
     // We need to update the dimension before the scan is started.
     try {
       await QRViewController.updateDimensions(key, _channel, overlay: overlay);
