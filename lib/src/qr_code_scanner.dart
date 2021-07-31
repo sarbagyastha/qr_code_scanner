@@ -1,7 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import 'lifecycle_event_handler.dart';
@@ -29,6 +31,7 @@ class QRView extends StatefulWidget {
     this.cameraFacing = CameraFacing.back,
     this.onPermissionSet,
     this.formatsAllowed = const <BarcodeFormat>[],
+    this.useHybridComposition = false,
   }) : super(key: key);
 
   /// [onQRViewCreated] gets called when the view is created
@@ -52,6 +55,14 @@ class QRView extends StatefulWidget {
 
   /// Use [formatsAllowed] to specify which formats needs to be scanned.
   final List<BarcodeFormat> formatsAllowed;
+
+  /// Use Hybrid Composition to append the scanner in the view hierarchy.
+  ///
+  /// Prior to Android 10, this mode might significantly reduce the frame throughput (FPS) of the Flutter UI.
+  /// See [performance](https://flutter.dev/docs/development/platform-integration/platform-views#performance) for more info.
+  ///
+  /// Default is false.
+  final bool useHybridComposition;
 
   @override
   State<StatefulWidget> createState() => _QRViewState();
@@ -119,28 +130,59 @@ class _QRViewState extends State<QRView> {
         cameraFacing: widget.cameraFacing,
       );
     } else {
+      final viewType = 'net.touchcapture.qr.flutterqr/qrview';
+      final creationParams = _QrCameraSettings(
+        cameraFacing: widget.cameraFacing,
+      ).toMap();
+
       switch (defaultTargetPlatform) {
         case TargetPlatform.android:
-          _platformQrView = AndroidView(
-            viewType: 'net.touchcapture.qr.flutterqr/qrview',
-            onPlatformViewCreated: _onPlatformViewCreated,
-            creationParams:
-                _QrCameraSettings(cameraFacing: widget.cameraFacing).toMap(),
-            creationParamsCodec: StandardMessageCodec(),
-          );
+          if (widget.useHybridComposition) {
+            _platformQrView = PlatformViewLink(
+              viewType: viewType,
+              surfaceFactory: (context, controller) {
+                return AndroidViewSurface(
+                  controller: controller as AndroidViewController,
+                  gestureRecognizers: const <
+                      Factory<OneSequenceGestureRecognizer>>{},
+                  hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+                );
+              },
+              onCreatePlatformView: (params) {
+                return PlatformViewsService.initSurfaceAndroidView(
+                  id: params.id,
+                  viewType: viewType,
+                  layoutDirection: TextDirection.ltr,
+                  creationParams: creationParams,
+                  creationParamsCodec: const StandardMessageCodec(),
+                )
+                  ..addOnPlatformViewCreatedListener(
+                      params.onPlatformViewCreated)
+                  ..addOnPlatformViewCreatedListener(_onPlatformViewCreated)
+                  ..create();
+              },
+            );
+          } else {
+            _platformQrView = AndroidView(
+              viewType: viewType,
+              onPlatformViewCreated: _onPlatformViewCreated,
+              creationParams: creationParams,
+              creationParamsCodec: const StandardMessageCodec(),
+            );
+          }
           break;
         case TargetPlatform.iOS:
           _platformQrView = UiKitView(
-            viewType: 'net.touchcapture.qr.flutterqr/qrview',
+            viewType: viewType,
             onPlatformViewCreated: _onPlatformViewCreated,
-            creationParams:
-                _QrCameraSettings(cameraFacing: widget.cameraFacing).toMap(),
-            creationParamsCodec: StandardMessageCodec(),
+            creationParams: creationParams,
+            creationParamsCodec: const StandardMessageCodec(),
           );
           break;
         default:
           throw UnsupportedError(
-              "Trying to use the default qrview implementation for $defaultTargetPlatform but there isn't a default one");
+            "Trying to use the default qrview implementation for $defaultTargetPlatform but there isn't a default one",
+          );
       }
     }
     return _platformQrView;
@@ -151,12 +193,15 @@ class _QRViewState extends State<QRView> {
 
     // Start scan after creation of the view
     final controller = QRViewController._(
-        _channel,
-        widget.key as GlobalKey<State<StatefulWidget>>?,
-        widget.onPermissionSet,
-        widget.cameraFacing)
-      .._startScan(widget.key as GlobalKey<State<StatefulWidget>>,
-          widget.overlay, widget.formatsAllowed);
+      _channel,
+      widget.key as GlobalKey<State<StatefulWidget>>?,
+      widget.onPermissionSet,
+      widget.cameraFacing,
+    ).._startScan(
+        widget.key as GlobalKey<State<StatefulWidget>>,
+        widget.overlay,
+        widget.formatsAllowed,
+      );
 
     // Initialize the controller for controlling the QRView
     widget.onQRViewCreated(controller);
